@@ -4,4 +4,17 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "fastapi>=0.162.4",
+    "httpx>=0.28.1",
+    "pydantic>=2.14.3",
+    "pydantic-settings>=2.16.2",
+    "python-dotenv>=1.2.4",
+    "streamlit>=1.67.0",
+    "tree-sitter>=0.26.1",
+    "tree-sitter-javascript>=0.25.0",
+    "tree-sitter-python>=0.25.0",
+    "tree-sitter-typescript>=0.23.2",
+    "unidiff>=1.0.1",
+    "uvicorn>=0.54.0",
+]
