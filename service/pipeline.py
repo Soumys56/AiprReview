@@ -143,6 +143,8 @@ class Stage2Pipeline:
 
         result = {
             "pr_number": pr["number"],
+            "pr_title": pr.get("title", ""),
+            "pr_description": pr.get("body", ""),
             "base_sha": base,
             "head_sha": head,
             "index": index_info,

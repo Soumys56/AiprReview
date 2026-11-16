@@ -130,7 +130,6 @@ async def fetch_pull_request(owner: str, repo: str, pr_number: int) -> dict:
         pr = response.json()
         return {
             "number": pr["number"],
-            "title": pr["title"],
             "author": pr["user"]["login"],
             "state": pr["state"],
             "head_branch": pr["head"]["ref"],
@@ -140,4 +139,6 @@ async def fetch_pull_request(owner: str, repo: str, pr_number: int) -> dict:
             "created_at": pr["created_at"],
             "updated_at": pr["updated_at"],
             "url": pr["html_url"],
+            "title": pr.get("title", ""),
+            "body": pr.get("body", ""),
         }
