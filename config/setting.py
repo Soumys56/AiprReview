@@ -9,6 +9,8 @@ class Settings(BaseSettings):
     REPO_CACHE_DIR:str
     INDEX_DB_PATH:str
     GIT_HOST:str
+    GROQ_API:str
+    GROQ_TOKEN:str
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8"
