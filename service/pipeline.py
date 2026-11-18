@@ -1,7 +1,6 @@
 import asyncio
 import difflib
 
-from components.github_fetchpr_client import fetch_pr_diff
 from components.github_fetchpr_client import fetch_pr_diff, fetch_pull_request
 from service.symbol import extract, is_excluded, is_test_file, language_for
 MAX_CODE_LINES = 150
@@ -75,6 +74,10 @@ class Stage2Pipeline:
     async def run(self, pr_number: int) -> dict:
         pr = await fetch_pull_request(self.owner, self.repo, pr_number)
         files = await fetch_pr_diff(self.owner, self.repo, pr_number)
+        return await asyncio.to_thread(self._run_sync, pr, files)
+
+    async def run_manual(self, pr: dict, files: list[dict]) -> dict:
+        """Run Stage 2 pipeline directly from precomputed PR metadata and changed files list without hitting GitHub APIs."""
         return await asyncio.to_thread(self._run_sync, pr, files)
 
     # ---------------------------------------------------------------- core

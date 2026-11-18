@@ -1,164 +1,5 @@
+from __future__ import annotations
 
-# import sys
-# import asyncio
-# from pathlib import Path
-# import json
-# PROJECT_ROOT = Path(__file__).resolve().parent.parent
-
-# if str(PROJECT_ROOT) not in sys.path:
-#     sys.path.insert(0, str(PROJECT_ROOT))
-
-# import streamlit as st
-
-# from config.setting import settings
-# from components.github_fetchpr_client import githubFetch
-# from components.github_fetchpr_client import GitHubPRDiff
-# from utilitis.utitis import separate_before_after
-
-
-# # -----------------------------
-# # GitHub API functions
-# # -----------------------------
-
-# async def get_all_prs():
-#     github_req = githubFetch(
-#         settings.REPO,
-#         settings.OWNER
-#     )
-
-#     return await github_req.github_fetch_all_pr()
-
-
-# async def get_pr_changes(pr_number):
-#     github_req = GitHubPRDiff(
-#         settings.REPO,
-#         settings.OWNER,
-#         pr_number=pr_number
-#     )
-#     return await github_req.github_fetch_pr_diff()
-
-
-# # -----------------------------
-# # Streamlit Configuration
-# # -----------------------------
-
-# st.set_page_config(
-#     page_title="AI PR REVIEW",
-#     page_icon="📊",
-#     layout="wide",
-#     initial_sidebar_state="expanded"
-# )
-
-# st.title("🚀 AI Pull Request Review")
-# st.caption(f"Repository: {settings.OWNER}/{settings.REPO}")
-
-
-# # -----------------------------
-# # Fetch All Pull Requests
-# # -----------------------------
-
-# try:
-#     with st.spinner("Fetching Pull Requests..."):
-#         prs = asyncio.run(get_all_prs())
-
-#     if not prs:
-#         st.warning("No Pull Requests found.")
-#         st.stop()
-
-# except Exception as e:
-#     st.error(f"Failed to fetch Pull Requests: {e}")
-#     st.stop()
-
-
-# # -----------------------------
-# # PR Dropdown
-# # -----------------------------
-
-# pr_options = {
-#     f"PR #{pr['number']} - {pr['title']}": pr['number']
-#     for pr in prs
-# }
-
-# selected_pr = st.selectbox(
-#     "Choose your Pull Request:",
-#     options=list(pr_options.keys())
-# )
-
-# selected_pr_number = pr_options[selected_pr]
-
-# st.info(f"Selected Pull Request: {selected_pr}")
-
-
-# # -----------------------------
-# # Fetch Selected PR Changes
-# # -----------------------------
-
-# try:
-#     with st.spinner("Fetching changed files..."):
-#         changed_files = asyncio.run(
-#             get_pr_changes(selected_pr_number)
-#         )
-#         print(changed_files)
-
-#     if not changed_files:
-#         st.warning("No changed files found.")
-#         st.stop()
-
-# except Exception as e:
-#     st.error(f"Failed to fetch PR changes: {e}")
-#     st.stop()
-
-# # -----------------------------
-# # Display Before / After
-# # -----------------------------
-
-# st.subheader("📂 Changed Files")
-
-# # Normalize response into a list
-# if isinstance(changed_files, dict):
-#     changed_files = [changed_files]
-
-# for file in changed_files:
-
-#     filename = file.get("filename", "Unknown file")
-
-#     st.markdown(f"### 📄 {filename}")
-
-#     st.caption(
-#         f"Status: {file.get('status', 'unknown')} | "
-#         f"Additions: +{file.get('additions', 0)} | "
-#         f"Deletions: -{file.get('deletions', 0)}"
-#     )
-
-#     patch = file.get("patch", "")
-
-#     if file.get("before_changes") is not None:
-#         comparison = file
-
-#     elif patch:
-#         comparison = separate_before_after(
-#             patch,
-#             filename
-#         )
-
-#     else:
-#         st.warning("Patch unavailable for this file.")
-#         continue
-
-#     before = comparison.get("before_changes", "")
-#     after = comparison.get("after_changes", "")
-
-#     col1, col2 = st.columns(2)
-
-#     with col1:
-#         st.markdown("#### 🔴 Before Changes")
-#         st.code(before or "No previous content")
-
-#     with col2:
-#         st.markdown("#### 🟢 After Changes")
-#         st.code(after or "No updated content")
-
-#     st.divider()
 import asyncio
 import json
 import sys
@@ -169,18 +10,33 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+import importlib
 import streamlit as st
 from config.setting import settings
 from components.github_fetchpr_client import githubFetch, GitHubPRDiff
-from utilitis.utitis import separate_before_after
 from components.index_store import IndexStore
 from components.repo_mirror import RepoMirror
+from service.offline_branch_pr import build_offline_branch_pr, extract_zip_to_map
+import service.pipeline
+importlib.reload(service.pipeline)
 from service.pipeline import Stage2Pipeline
+
+if not hasattr(Stage2Pipeline, "run_manual"):
+    async def _run_manual(self, pr: dict, files: list[dict]) -> dict:
+        return await asyncio.to_thread(self._run_sync, pr, files)
+    Stage2Pipeline.run_manual = _run_manual
+
 from stage3.pipeline import Stage3Pipeline
 from stage3.spec_parser import parse_user_story_attachment
+from utilitis.utitis import separate_before_after
 
 
-def source_excerpt(worktree_dir: str | None, file_path: str, line_number: int, radius: int = 2) -> tuple[str, str] | None:
+def source_excerpt(
+    worktree_dir: str | None,
+    file_path: str,
+    line_number: int,
+    radius: int = 2,
+) -> tuple[str, str] | None:
     """Return numbered source context around a finding line, constrained to the PR worktree."""
     if not worktree_dir or not file_path or file_path == "PR requirements":
         return None
@@ -202,11 +58,20 @@ def source_excerpt(worktree_dir: str | None, file_path: str, line_number: int, r
         for number in range(start, end + 1)
     )
     language_by_extension = {
-        ".py": "python", ".pyi": "python", ".js": "javascript", ".jsx": "javascript",
-        ".ts": "typescript", ".tsx": "typescript", ".html": "html", ".htm": "html",
-        ".json": "json", ".css": "css", ".scss": "css",
+        ".py": "python",
+        ".pyi": "python",
+        ".js": "javascript",
+        ".jsx": "javascript",
+        ".ts": "typescript",
+        ".tsx": "typescript",
+        ".html": "html",
+        ".htm": "html",
+        ".json": "json",
+        ".css": "css",
+        ".scss": "css",
     }
     return snippet, language_by_extension.get(source_path.suffix.lower(), "text")
+
 
 st.set_page_config(
     page_title="AI PR REVIEW",
@@ -215,7 +80,6 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 st.title("🚀 AI Pull Request Review")
-st.caption(f"Repository: {settings.OWNER}/{settings.REPO}")
 
 
 @st.cache_data(ttl=120, show_spinner="Fetching pull requests...")
@@ -234,7 +98,7 @@ def get_pr_changes(pr_number: int):
 
 @st.cache_resource
 def get_pipeline():
-    cache_dir = getattr(settings, "REPO_CACHE_DIR", ".cache/mirrors")
+    cache_dir = getattr(settings, "REPO_CACHE_DIR", ".cache/repos")
     git_host = getattr(settings, "GIT_HOST", "github.com")
     store = IndexStore(settings.INDEX_DB_PATH)
     mirror = RepoMirror(
@@ -248,34 +112,278 @@ def get_pipeline():
 
 
 # -----------------------------
-# PR Filter & Selector
+# Mode Selector: Offline Branch Upload vs GitHub PR
 # -----------------------------
-state = st.radio("PR state", ["open"], horizontal=True)
+has_github_token = bool(settings.GITHUB_TOKEN and settings.GITHUB_TOKEN.strip())
+default_mode_index = 1 if has_github_token else 0
 
-try:
-    prs = get_all_prs(state)
-except Exception as e:
-    st.error(f"Failed to fetch Pull Requests: {e}")
-    st.stop()
-
-if not prs:
-    st.warning("No Pull Requests found.")
-    st.stop()
-
-pr_options = {f"PR #{p['number']} - {p['title']}": p["number"] for p in prs}
-selected = st.selectbox("Choose your Pull Request:", list(pr_options))
-pr_number = pr_options[selected]
-
-# -----------------------------
-# Tabs: Changed Files, Stage 2 Context, and Stage 3 Analysis
-# -----------------------------
-tab_diff, tab_stage2, tab_stage3 = st.tabs(
-    ["📂 Changed files", "🧠 Stage 2 context", "🧪 Stage 3 analysis"]
+selected_mode = st.radio(
+    "Review Mode",
+    ["Offline Branch Upload (No Token)", "GitHub PR"],
+    index=default_mode_index,
+    horizontal=True,
+    help="Select 'Offline Branch Upload' to review local branch code without a GitHub token.",
 )
 
+is_offline = selected_mode == "Offline Branch Upload (No Token)"
+
+# -----------------------------
+# Mode 1: Offline Branch Upload Panel
+# -----------------------------
+if is_offline:
+    st.caption("📦 **Offline Mode:** Upload `main` and your PR branch `.zip` (or individual files) to compute Git diffs locally and run Stage 2 + Stage 3 reviews.")
+
+    with st.container(border=True):
+        col_base, col_head = st.columns(2)
+
+        with col_base:
+            st.markdown("#### 1️⃣ Base Branch (`main`)")
+            base_uploads = st.file_uploader(
+                "Upload base branch archive (.zip) or files",
+                type=["zip", "py", "js", "ts", "tsx", "jsx", "json", "html", "css", "md", "txt", "toml", "yaml", "yml"],
+                accept_multiple_files=True,
+                key="offline_base_upload",
+                help="Upload a .zip containing the base/main branch or select multiple files.",
+            )
+
+        with col_head:
+            st.markdown("#### 2️⃣ PR Branch")
+            head_uploads = st.file_uploader(
+                "Upload PR branch archive (.zip) or files",
+                type=["zip", "py", "js", "ts", "tsx", "jsx", "json", "html", "css", "md", "txt", "toml", "yaml", "yml"],
+                accept_multiple_files=True,
+                key="offline_head_upload",
+                help="Upload a .zip containing the PR branch or select multiple modified/new files.",
+            )
+
+        col_meta1, col_meta2 = st.columns([1, 2])
+        with col_meta1:
+            offline_project_name = st.text_input(
+                "Project name",
+                value=st.session_state.get("offline_project_name", "offline-repo"),
+                key="offline_input_project_name",
+            )
+        with col_meta2:
+            offline_pr_title = st.text_input(
+                "PR title / description",
+                value=st.session_state.get("offline_pr_title", "Offline Branch PR Review"),
+                key="offline_input_pr_title",
+            )
+
+        if st.button("Build Diff & Load Offline PR", type="primary", key="btn_build_offline_pr"):
+            if not base_uploads and not head_uploads:
+                st.error("Please upload at least one archive (.zip) or file for base and/or PR branch.")
+            else:
+                with st.spinner("Extracting archives, initializing bare Git mirror, and computing diff..."):
+                    try:
+                        def _collect_files(uploads) -> dict[str, bytes]:
+                            res: dict[str, bytes] = {}
+                            for up in uploads or []:
+                                if up.name.lower().endswith(".zip"):
+                                    res.update(extract_zip_to_map(up.getvalue()))
+                                else:
+                                    res[up.name] = up.getvalue()
+                            return res
+
+                        base_map = _collect_files(base_uploads)
+                        head_map = _collect_files(head_uploads)
+
+                        cache_dir = getattr(settings, "REPO_CACHE_DIR", ".cache/repos")
+                        mirror, pr_meta, changed_files = build_offline_branch_pr(
+                            base_files=base_map,
+                            head_files=head_map,
+                            project_name=offline_project_name,
+                            cache_dir=cache_dir,
+                            pr_title=offline_pr_title,
+                        )
+
+                        st.session_state["offline_mirror"] = mirror
+                        st.session_state["offline_pr_meta"] = pr_meta
+                        st.session_state["offline_changed_files"] = changed_files
+                        st.session_state["offline_project_name"] = offline_project_name
+                        st.session_state["offline_pr_title"] = offline_pr_title
+                        st.session_state["offline_pr_loaded"] = True
+
+                        # Clear old Stage 2 / Stage 3 session state entries
+                        for k in list(st.session_state.keys()):
+                            if k.startswith(("stage2_offline", "stage3_offline")):
+                                del st.session_state[k]
+
+                        st.success(
+                            f"✅ Successfully built offline diff: {len(changed_files)} changed file(s) "
+                            f"(base `{pr_meta['base_sha'][:7]}` → head `{pr_meta['head_sha'][:7]}`)."
+                        )
+                    except Exception as exc:
+                        st.error(f"Failed to build offline PR diff: {exc}")
+
+    if not st.session_state.get("offline_pr_loaded"):
+        st.info("👆 Upload your base and PR branch files above and click **'Build Diff & Load Offline PR'** to proceed with the review.")
+        st.stop()
+
+    active_mirror = st.session_state["offline_mirror"]
+    active_pr = st.session_state["offline_pr_meta"]
+    active_changed_files = st.session_state["offline_changed_files"]
+    active_pr_number = active_pr["number"]
+    pr_state_key = f"offline_{active_pr['head_sha'][:8]}"
+    st.info(f"📂 Active Offline PR: **{active_pr['title']}** (`{active_pr['base_sha'][:7]}` → `{active_pr['head_sha'][:7]}`)")
+
+# -----------------------------
+# Mode 2: GitHub PR Selector
+# -----------------------------
+else:
+    st.caption(f"Repository: {settings.OWNER}/{settings.REPO}")
+    if not has_github_token:
+        st.error("GITHUB_TOKEN is missing from `.env`. Please add your token or switch to 'Offline Branch Upload (No Token)' mode.")
+        st.stop()
+
+    state = st.radio("PR state", ["open"], horizontal=True)
+    try:
+        prs = get_all_prs(state)
+    except Exception as e:
+        st.error(f"Failed to fetch Pull Requests: {e}")
+        st.stop()
+
+    if not prs:
+        st.warning("No Pull Requests found.")
+        st.stop()
+
+    pr_options = {f"PR #{p['number']} - {p['title']}": p["number"] for p in prs}
+    selected = st.selectbox("Choose your Pull Request:", list(pr_options))
+    active_pr_number = pr_options[selected]
+    active_mirror = get_pipeline().mirror
+    active_pr = {"number": active_pr_number, "owner": settings.OWNER, "repo": settings.REPO}
+    try:
+        active_changed_files = get_pr_changes(active_pr_number)
+    except Exception as e:
+        st.error(f"Failed to fetch PR changes: {e}")
+        st.stop()
+
+    pr_state_key = str(active_pr_number)
+
+
+# -----------------------------
+# Tabs: Changed files, Stage 2 context, Stage 3 review
+# -----------------------------
+tab_diff, tab_stage2, tab_stage3 = st.tabs(
+    ["📂 Changed files", "🧠 Stage 2 context", "🤖 Stage 3 review"]
+)
+
+# -----------------------------
+# Tab 1: Changed files (Before vs After)
+# -----------------------------
+with tab_diff:
+    st.subheader("📂 Changed Files")
+
+    if not active_changed_files:
+        st.warning("No changed files found.")
+    else:
+        files_list = [active_changed_files] if isinstance(active_changed_files, dict) else active_changed_files
+
+        for file in files_list:
+            filename = file.get("filename", "Unknown file")
+            st.markdown(f"### 📄 `{filename}`")
+            st.caption(
+                f"Status: **{file.get('status', 'unknown')}** | "
+                f"Additions: +{file.get('additions', 0)} | "
+                f"Deletions: -{file.get('deletions', 0)}"
+            )
+
+            patch = file.get("patch")
+            if file.get("before_changes") is not None:
+                cmp = file
+            elif patch:
+                cmp = separate_before_after(patch, filename)
+            else:
+                cmp = {"before_changes": "", "after_changes": ""}
+
+            before = cmp.get("before_changes", "")
+            after = cmp.get("after_changes", "")
+
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown("#### 🔴 Before Changes")
+                st.code(before or "No previous content", language=source_excerpt(None, filename, 1, 1)[1] if source_excerpt(None, filename, 1, 1) else "python")
+            with c2:
+                st.markdown("#### 🟢 After Changes")
+                st.code(after or "No updated content", language=source_excerpt(None, filename, 1, 1)[1] if source_excerpt(None, filename, 1, 1) else "python")
+            st.divider()
+
+# -----------------------------
+# Tab 2: Stage 2 Context (Impact Analysis)
+# -----------------------------
+with tab_stage2:
+    st.subheader("🧠 Stage 2 Semantic & Impact Analysis")
+    stage2_state_key = f"stage2_{pr_state_key}"
+
+    if st.button("Run Stage 2 (impact analysis)", type="primary", key=f"btn_stage2_{stage2_state_key}"):
+        with st.spinner("Indexing base commit and analysing symbol impacts..."):
+            try:
+                if is_offline:
+                    store = IndexStore(settings.INDEX_DB_PATH)
+                    pipeline = Stage2Pipeline(
+                        store=store,
+                        mirror=active_mirror,
+                        owner="local",
+                        repo=active_pr.get("repo", "offline-repo"),
+                    )
+                    if hasattr(pipeline, "run_manual"):
+                        result = asyncio.run(pipeline.run_manual(active_pr, active_changed_files))
+                    else:
+                        result = asyncio.run(asyncio.to_thread(pipeline._run_sync, active_pr, active_changed_files))
+                else:
+                    pipeline = get_pipeline()
+                    result = asyncio.run(pipeline.run(active_pr_number))
+
+                st.session_state[stage2_state_key] = result
+            except Exception as e:
+                st.error(f"Stage 2 failed: {e}")
+                st.stop()
+
+    result = st.session_state.get(stage2_state_key)
+    if result:
+        if result.get("warnings"):
+            for w in result["warnings"]:
+                st.warning(w)
+
+        if not result.get("chunks"):
+            st.info("No semantic or file-window chunks generated for this PR.")
+
+        blast_icons = {"high": "🔴", "medium": "🟠", "low": "🟡", "none": "🟢"}
+
+        for ch in result.get("chunks", []):
+            if ch.get("chunk_type") != "symbol":
+                st.info(f"{ch.get('file', 'Unknown')}: {ch.get('reason', '')} (sent as raw patch)")
+                continue
+
+            imp = ch.get("impact", {})
+            icon = blast_icons.get(imp.get("blast_radius"), "⚪")
+
+            with st.expander(f"{icon} {ch.get('symbol')} · {ch.get('change_type')} · `{ch.get('file')}`"):
+                if ch.get("old_signature") != ch.get("new_signature"):
+                    st.write(f"`{ch.get('old_signature')}` → `{ch.get('new_signature')}`")
+
+                for c in imp.get("direct_callers", []):
+                    st.write(
+                        f"- {c['status']} · `{c['symbol']}` ({c['file']}:{c['line']}) "
+                        f"{'updated' if c.get('updated_in_pr') else 'NOT in PR'} {c.get('detail', '')}"
+                    )
+
+                st.code(ch.get("symbol_diff") or ch.get("code") or "", language="diff")
+
+        st.download_button(
+            "Download chunks JSON",
+            json.dumps(result, indent=2),
+            file_name=f"pr_{active_pr_number}_stage2.json",
+            mime="application/json",
+            key=f"download_stage2_{stage2_state_key}",
+        )
+
+# -----------------------------
+# Tab 3: Stage 3 Review (Static Checks + Parallel LLMs)
+# -----------------------------
 with tab_stage3:
     st.subheader("🤖 User Story / Bug Alignment + Parallel Review")
-    st.write("Add the story or bug requirements to assess PR alignment and run independent reviewers.")
+    st.write("Add story or bug requirements to assess PR alignment and run independent reviewers.")
 
     selected_project_areas = st.multiselect(
         "Which project area(s) does this PR concern? Select before analysis.",
@@ -287,20 +395,22 @@ with tab_stage3:
             "Chatbot",
             "AI PR Review (Python)",
         ],
-        key=f"project_areas_{pr_number}",
-        help="The selection routes files to language-appropriate checks. Frontend/backend JS and TS use ESLint, TypeScript, and Prettier; Python uses Pylint and Python security checks.",
+        key=f"project_areas_{pr_state_key}",
+        default=["AI PR Review (Python)"],
+        help="The selection routes files to language-appropriate checks. Frontend/backend JS/TS use ESLint and TypeScript; Python uses Ruff, Bandit, and Python linters.",
     )
-    stage3_state_key = f"stage3_{pr_number}_{'_'.join(sorted(selected_project_areas)) or 'unselected'}"
+
+    stage3_state_key = f"stage3_{pr_state_key}_{'_'.join(sorted(selected_project_areas)) or 'unselected'}"
 
     uploaded_spec = st.file_uploader(
         "Upload a User Story / Bug file",
         type=["xml", "txt", "md", "xlsx", "html", "htm", "json", "csv"],
-        key=f"spec_upload_{pr_number}",
+        key=f"spec_upload_{pr_state_key}",
     )
     pasted_requirements = st.text_area(
         "Or paste acceptance criteria / bug details",
         height=150,
-        key=f"spec_text_{pr_number}",
+        key=f"spec_text_{pr_state_key}",
         placeholder="As a user, I want…\nAcceptance criteria…\nBug reproduction steps…",
     )
 
@@ -319,26 +429,42 @@ with tab_stage3:
     spec_parts = [part.strip() for part in (parsed_spec, pasted_requirements) if part.strip()]
     requirements_text = "\n\n## Additional pasted criteria\n".join(spec_parts)
     if not requirements_text:
-        st.info("You can run the security, logic, and test reviewers without a spec; alignment scoring needs story or bug requirements.")
+        st.info("You can run security, logic, and test reviewers without a spec; alignment scoring needs story or bug requirements.")
 
     if st.button(
         "Run Stage 3",
         type="primary",
-        key=f"stage3_run_{pr_number}_{'_'.join(sorted(selected_project_areas)) or 'unselected'}",
+        key=f"btn_run_stage3_{stage3_state_key}",
         disabled=not selected_project_areas,
     ):
         try:
-            with st.spinner("Running static checks and four parallel LLM reviewers…"):
-                context_bundle = asyncio.run(get_pipeline().run(pr_number))
-                pipeline = get_pipeline()
+            with st.spinner("Running static checks and parallel LLM reviewers…"):
+                stage2_result = st.session_state.get(stage2_state_key)
+                if not stage2_result:
+                    if is_offline:
+                        store = IndexStore(settings.INDEX_DB_PATH)
+                        pipe = Stage2Pipeline(
+                            store=store,
+                            mirror=active_mirror,
+                            owner="local",
+                            repo=active_pr.get("repo", "offline-repo"),
+                        )
+                        if hasattr(pipe, "run_manual"):
+                            stage2_result = asyncio.run(pipe.run_manual(active_pr, active_changed_files))
+                        else:
+                            stage2_result = asyncio.run(asyncio.to_thread(pipe._run_sync, active_pr, active_changed_files))
+                    else:
+                        stage2_result = asyncio.run(get_pipeline().run(active_pr_number))
+                    st.session_state[stage2_state_key] = stage2_result
+
                 stage3 = Stage3Pipeline(
-                    mirror=pipeline.mirror,
-                    pr_number=pr_number,
+                    mirror=active_mirror,
+                    pr_number=active_pr_number,
                     worktree_root=f"{settings.REPO_CACHE_DIR}/worktree",
                 )
                 result = asyncio.run(
                     stage3.run(
-                        context_bundle,
+                        stage2_result,
                         requirements_text,
                         project_areas=selected_project_areas,
                     )
@@ -352,7 +478,7 @@ with tab_stage3:
                         for name, check in stage3.check_results.items()
                     },
                     "dependencies": stage3.dependency_status,
-                    "head_sha": context_bundle["head_sha"],
+                    "head_sha": stage2_result["head_sha"],
                     "worktree_dir": str(stage3.worktree_dir) if stage3.worktree_dir else None,
                     "result": result.to_dict(),
                 }
@@ -400,25 +526,16 @@ with tab_stage3:
                             )
                             if excerpt:
                                 st.code(excerpt[0], language=excerpt[1], line_numbers=False)
-                            if finding.get("requirement"):
-                                st.markdown(f"**Requirement / bug:** {finding['requirement']}")
-                            if finding.get("root_cause"):
-                                st.markdown(f"**Why this happens:** {finding['root_cause']}")
-                            if finding.get("expected_behavior") or finding.get("actual_behavior"):
-                                expected_col, actual_col = st.columns(2)
-                                expected_col.markdown(
-                                    f"**Expected**\n\n{finding.get('expected_behavior') or 'Not specified'}"
-                                )
-                                actual_col.markdown(
-                                    f"**Actual**\n\n{finding.get('actual_behavior') or finding['message']}"
-                                )
                             if finding.get("file") and stage3_result.get("head_sha"):
-                                source_url = (
-                                    f"https://{settings.GIT_HOST}/{settings.OWNER}/{settings.REPO}"
-                                    f"/blob/{stage3_result['head_sha']}/{quote(finding['file'], safe='/')}"
-                                    f"#L{finding['line']}"
-                                )
-                                st.markdown(f"[Open {finding['file']}:{finding['line']} on GitHub]({source_url})")
+                                if not is_offline:
+                                    source_url = (
+                                        f"https://{settings.GIT_HOST}/{settings.OWNER}/{settings.REPO}"
+                                        f"/blob/{stage3_result['head_sha']}/{quote(finding['file'], safe='/')}"
+                                        f"#L{finding['line']}"
+                                    )
+                                    st.markdown(f"[Open {finding['file']}:{finding['line']} on GitHub]({source_url})")
+                                else:
+                                    st.caption(f"📁 Local file: `{finding['file']}:{finding['line']}`")
                             if finding.get("suggestion"):
                                 st.info(f"Suggested fix: {finding['suggestion']}")
 
@@ -460,7 +577,7 @@ with tab_stage3:
 
         requirement_cases = (alignment or {}).get("requirement_test_cases", [])
         st.markdown("### Requirement-driven test scenarios")
-        st.caption("These scenarios are assessed against the PR code by the alignment reviewer; the PR pytest suite below runs the repository's actual tests.")
+        st.caption("These scenarios are assessed against the PR code by the alignment reviewer.")
         if requirement_cases:
             for case in requirement_cases:
                 verdict = str(case.get("result", "UNCLEAR")).upper()
@@ -541,6 +658,7 @@ with tab_stage3:
                 "Search findings", key=f"stage3_search_{stage3_state_key}",
                 placeholder="Search title, message, or rule ID",
             ).strip().lower()
+
             all_findings = [
                 finding for finding in all_review_findings
                 if finding.get("severity") in severity_filter
@@ -559,7 +677,7 @@ with tab_stage3:
             for finding in all_findings:
                 with st.expander(
                     f"{finding['severity'].upper()} · {finding['agent']} · "
-                    f"{finding['file']}:{finding['line']} · {finding['title']}"
+                    f"`{finding['file']}:{finding['line']}` · {finding['title']}"
                 ):
                     excerpt = source_excerpt(
                         stage3_result.get("worktree_dir"),
@@ -568,12 +686,15 @@ with tab_stage3:
                     )
                     if excerpt:
                         st.code(excerpt[0], language=excerpt[1], line_numbers=False)
-                    st.markdown(
-                        f"[{finding['file']}:{finding['line']} on GitHub]"
-                        f"(https://{settings.GIT_HOST}/{settings.OWNER}/{settings.REPO}"
-                        f"/blob/{stage3_result['head_sha']}/{quote(finding['file'], safe='/')}"
-                        f"#L{finding['line']})"
-                    )
+                    if not is_offline:
+                        st.markdown(
+                            f"[{finding['file']}:{finding['line']} on GitHub]"
+                            f"(https://{settings.GIT_HOST}/{settings.OWNER}/{settings.REPO}"
+                            f"/blob/{stage3_result['head_sha']}/{quote(finding['file'], safe='/')}"
+                            f"#L{finding['line']})"
+                        )
+                    else:
+                        st.caption(f"📁 Local file: `{finding['file']}:{finding['line']}`")
                     if finding.get("requirement"):
                         st.markdown(f"**Requirement / bug:** {finding['requirement']}")
                     st.markdown(f"**What is wrong:** {finding['message']}")
@@ -589,6 +710,7 @@ with tab_stage3:
                         )
                     if finding.get("suggestion"):
                         st.markdown(f"**Suggested fix:** {finding['suggestion']}")
+
             for run in agent_runs:
                 if run.get("summary"):
                     with st.expander(f"{run['agent'].replace('_', ' ').title()} summary"):
@@ -598,9 +720,9 @@ with tab_stage3:
             st.download_button(
                 "Download payload JSON",
                 data=result_data["payload_json"],
-                file_name=f"pr-{pr_number}-review-payload.json",
+                file_name=f"pr-{active_pr_number}-review-payload.json",
                 mime="application/json",
-                key=f"payload_download_{pr_number}",
+                key=f"payload_download_{pr_state_key}",
             )
             st.code(result_data["payload_json"], language="json")
 
@@ -611,91 +733,3 @@ with tab_stage3:
                 st.code(system_prompt, language="text")
             st.markdown("**Shared user payload**")
             st.code(result_data["payload_json"], language="json")
-
-with tab_diff:
-    try:
-        changed_files = get_pr_changes(pr_number)
-    except Exception as e:
-        st.error(f"Failed to fetch PR changes: {e}")
-        st.stop()
-
-    if not changed_files:
-        st.warning("No changed files found.")
-        st.stop()
-
-    if isinstance(changed_files, dict):
-        changed_files = [changed_files]
-
-    for file in changed_files:
-        filename = file.get("filename", "Unknown file")
-        st.markdown(f"### 📄 {filename}")
-        st.caption(
-            f"Status: {file.get('status', 'unknown')} | "
-            f"+{file.get('additions', 0)} | -{file.get('deletions', 0)}"
-        )
-
-        patch = file.get("patch")
-        if file.get("before_changes") is not None:
-            cmp = file
-        elif patch:
-            cmp = separate_before_after(patch, filename)
-        else:
-            st.warning("Patch unavailable (binary or too large).")
-            continue
-
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown("#### 🔴 Before Changes")
-            st.code(cmp.get("before_changes") or "No previous content")
-        with c2:
-            st.markdown("#### 🟢 After Changes")
-            st.code(cmp.get("after_changes") or "No updated content")
-        st.divider()
-
-with tab_stage2:
-    if st.button("Run Stage 2 (impact analysis)", type="primary"):
-        with st.spinner("Indexing base commit (first run is slow) and analysing PR..."):
-            try:
-                result = asyncio.run(get_pipeline().run(pr_number))
-            except Exception as e:
-                st.error(f"Stage 2 failed: {e}")
-                st.stop()
-        st.session_state[f"stage2_{pr_number}"] = result
-
-    result = st.session_state.get(f"stage2_{pr_number}")
-    if result:
-        if result.get("warnings"):
-            for w in result["warnings"]:
-                st.warning(w)
-
-        if not result["chunks"]:
-            st.info("No semantic or file-window chunks generated for this PR.")
-
-        blast_icons = {"high": "🔴", "medium": "🟠", "low": "🟡", "none": "🟢"}
-
-        for ch in result["chunks"]:
-            if ch["chunk_type"] != "symbol":
-                st.info(f"{ch['file']}: {ch['reason']} (sent as raw patch)")
-                continue
-
-            imp = ch["impact"]
-            icon = blast_icons.get(imp["blast_radius"], "⚪")
-
-            with st.expander(f"{icon} {ch['symbol']} · {ch['change_type']} · {ch['file']}"):
-                if ch["old_signature"] != ch["new_signature"]:
-                    st.write(f"`{ch['old_signature']}` → `{ch['new_signature']}`")
-
-                for c in imp["direct_callers"]:
-                    st.write(
-                        f"- {c['status']} · `{c['symbol']}` ({c['file']}:{c['line']}) "
-                        f"{'updated' if c['updated_in_pr'] else 'NOT in PR'} {c.get('detail', '')}"
-                    )
-
-                st.code(ch["symbol_diff"] or ch["code"], language="diff")
-
-        st.download_button(
-            "Download chunks JSON",
-            json.dumps(result, indent=2),
-            file_name=f"pr_{pr_number}_stage2.json",
-            mime="application/json",
-        )
